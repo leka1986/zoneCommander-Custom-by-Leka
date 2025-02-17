@@ -1121,93 +1121,104 @@ do
 		trigger.action.outTextForCoalition(coalition, text, 10)
 	end
 	
-function BattleCommander:buyShopItem(coalition, id, alternateParams)
-    local item = self.shops[coalition][id]
+	function BattleCommander:buyShopItem(coalition, id, alternateParams)
+		local item = self.shops[coalition][id]
 
-    if id == 'supplies' or id == 'supplies2' then
-        local allUpgraded = true
-        local zones = self:getZones()
+		if id == 'supplies' or id == 'supplies2' then
+			local allUpgraded = true
+			local zones = self:getZones()
 
-        for _, zone in pairs(zones) do
-            if zone.side == 2 then
-                local upgradeCount = Utils.getTableSize(zone.built)
-                local totalUpgrades = #zone.upgrades.blue
+			for _, zone in pairs(zones) do
+				if zone.side == 2 then
+					local upgradeCount = Utils.getTableSize(zone.built)
+					local totalUpgrades = #zone.upgrades.blue
 
-                -- Check if upgrades are still available
-                if upgradeCount < totalUpgrades then
-                    allUpgraded = false
-                    break
-                end
+					-- Check if upgrades are still available
+					if upgradeCount < totalUpgrades then
+						allUpgraded = false
+						break
+					end
 
-                for i, v in pairs(zone.built) do
-                    local gr = Group.getByName(v)
-                    if gr and gr:getCoalition() == 2 then
-                        if gr:getSize() < gr:getInitialSize() then
-                            allUpgraded = false
-                            break
-                        end
-                    else
-                        allUpgraded = false
-                        break
-                    end
-                end
-            end
-        end
+					for i, v in pairs(zone.built) do
+						local gr = Group.getByName(v)
+						if gr and gr:getCoalition() == 2 then
+							if gr:getSize() < gr:getInitialSize() then
+								allUpgraded = false
+								break
+							end
+						else
+							allUpgraded = false
+							break
+						end
+					end
+				end
+			end
+			if allUpgraded then
+				trigger.action.outTextForCoalition(coalition, 'All zones are fully upgraded! No resupply is needed.', 10)
+				return
+			end
+		end
+		if id == 'emergencyCapture' then
+			local foundAny = false
+			for _,v in ipairs(self:getZones()) do
+				if v.active and v.side == 0 and (not v.NeutralAtStart or v.firstCaptureByRed) and not v.zone:lower():find("hidden") then
+					foundAny = true
+					break
+				end
+			end
+			if not foundAny then
+				trigger.action.outTextForCoalition(coalition, 'No valid neutral zones found', 15)
+				return
+			end
+		end    
+		if item then
+			if self.accounts[coalition] >= item.cost then
+				if item.stock == -1 or item.stock > 0 then
+					local success = true
+					local sitem = self.shopItems[id]
 
-        if allUpgraded then
-            trigger.action.outTextForCoalition(coalition, 'All zones are fully upgraded! No resupply is needed.', 10)
-            return
-        end
-    end
-    
-    if item then
-        if self.accounts[coalition] >= item.cost then
-            if item.stock == -1 or item.stock > 0 then
-                local success = true
-                local sitem = self.shopItems[id]
+					if alternateParams ~= nil and type(sitem.altAction) == 'function' then
+						success = sitem:altAction(alternateParams)
+					elseif type(sitem.action) == 'function' then
+						success = sitem:action()
+					end
 
-                if alternateParams ~= nil and type(sitem.altAction) == 'function' then
-                    success = sitem:altAction(alternateParams)
-                elseif type(sitem.action) == 'function' then
-                    success = sitem:action()
-                end
+					if success == true or success == nil then
 
-                if success == true or success == nil then
+						self.accounts[coalition] = self.accounts[coalition] - item.cost
+						if item.stock > 0 then
+							item.stock = item.stock - 1
+						end
 
-                    self.accounts[coalition] = self.accounts[coalition] - item.cost
-                    if item.stock > 0 then
-                        item.stock = item.stock - 1
-                    end
+						if item.stock == 0 then
+							self.shops[coalition][id] = nil
+							self:refreshShopMenuForCoalition(coalition)
+						end
 
-                    if item.stock == 0 then
-                        self.shops[coalition][id] = nil
-                        self:refreshShopMenuForCoalition(coalition)
-                    end
+						trigger.action.outTextForCoalition(coalition, 'Bought ['..item.name..'] for '..item.cost..'\n'..self.accounts[coalition]..' credits remaining', 5)
 
-                    trigger.action.outTextForCoalition(coalition, 'Bought ['..item.name..'] for '..item.cost..'\n'..self.accounts[coalition]..' credits remaining', 5)
+						if item.stock == 0 then
+							trigger.action.outTextForCoalition(coalition, '['..item.name..'] went out of stock', 5)
+						end
+					else
 
-                    if item.stock == 0 then
-                        trigger.action.outTextForCoalition(coalition, '['..item.name..'] went out of stock', 5)
-                    end
-                else
+						if type(success) == 'string' then
+							trigger.action.outTextForCoalition(coalition, success, 5)
+						else
+							trigger.action.outTextForCoalition(coalition, 'Not available at the current time', 5)
+						end
 
-                    if type(success) == 'string' then
-                        trigger.action.outTextForCoalition(coalition, success, 5)
-                    else
-                        trigger.action.outTextForCoalition(coalition, 'Not available at the current time', 5)
-                    end
+						return success
+					end
+				else
+					trigger.action.outTextForCoalition(coalition, 'Not available', 5)
+				end
+			else
 
-                    return success
-                end
-            else
-                trigger.action.outTextForCoalition(coalition, 'Not available', 5)
-            end
-        else
-
-            trigger.action.outTextForCoalition(coalition, 'Can not afford ['..item.name..']', 5)
-        end
-    end
-end
+				trigger.action.outTextForCoalition(coalition, 'Can not afford ['..item.name..']', 5)
+			end
+		end
+	end
 
 	
 	function BattleCommander:refreshShopMenuForCoalition(coalition)
@@ -1306,6 +1317,58 @@ function BattleCommander:showTargetZoneMenu(coalition, menuname, action, targetz
     
     return menu
 end
+
+	function BattleCommander:showEmergencyNeutralZoneMenu(coalition, menuname, callback)
+		local menu = missionCommands.addSubMenuForCoalition(coalition, menuname)
+		for _, v in ipairs(self.zones) do
+			if v.active and v.side == 0 and (not v.NeutralAtStart or v.firstCaptureByRed)
+			   and not v.zone:lower():find("hidden")
+			then
+				missionCommands.addCommandForCoalition(coalition, v.zone, menu, callback, v.zone)
+			end
+		end
+		return menu
+	end
+	
+	function findNearestAvailableSupplyCommander(chosenZone)
+		local best=nil
+		local bestDist=99999999
+		local inProgressForZone=false
+		for _,zC in ipairs(bc.zones) do
+			if zC.side==2 and zC.active then
+				for _,grpCmd in ipairs(zC.groups) do
+					if grpCmd.mission=='supply' and grpCmd.side==2 then
+						if grpCmd.targetzone==chosenZone.zone then
+							local st=grpCmd.state
+							if st=='takeoff' or st=='inair' or st=='landed' or st=='enroute' or st=='atdestination' then
+								inProgressForZone=true
+							elseif st=='dead' or st=='inhangar' or st=='preparing' then
+								local dist=measureDistanceZoneToZone(zC,chosenZone)
+								if dist<bestDist then
+									bestDist=dist
+									best=grpCmd
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+		if not best and inProgressForZone then
+			return nil,'inprogress'
+		end
+		return best,nil
+	end
+
+
+	function measureDistanceZoneToZone(zoneA, zoneB)
+		local czA = CustomZone:getByName(zoneA.zone)
+		local czB = CustomZone:getByName(zoneB.zone)
+		if not czA or not czB then
+			return 99999999
+		end
+		return mist.utils.get2DDist(czA.point, czB.point)
+	end
 
 	function BattleCommander:getRandomSurfaceUnitInZone(tgtzone, myside)
 		local zn = self:getZoneByName(tgtzone)
