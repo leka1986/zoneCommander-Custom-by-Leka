@@ -1,6 +1,6 @@
 --[[
 
-MOOSE IS NEEDED!!!
+MOOSE IS NEEDED!!! --------------- MOOSE IS NEEDED!!! ------------------- MOOSE IS NEEDED!!! ------------ MOOSE IS NEEDED!!!
 
 
 ~~~Description~~~
@@ -205,11 +205,7 @@ do
 
 		local newgr = mist.teleportToPoint(vars)
 
-		--------------------------------
-		-- Fallback if teleportToPoint fails
-		--------------------------------
 		if not newgr then
-			-- Note the third parameter is "false" so it actually spawns the group.
 			newgr = mist.cloneInZone(grname, spawnzone, false, nil, { 
 				initTasks    = true, 
 				newGroupName = newName 
@@ -3760,10 +3756,9 @@ function ZoneCommander:update()
 			CheckJtacStatus()
 		end
 	
-        if addCTLDZonesForBlueControlled then
-		local mappedZoneName = zoneMappings[self.zone]		
-            addCTLDZonesForBlueControlled(mappedZoneName)
-        end
+		if addCTLDZonesForBlueControlled then
+			addCTLDZonesForBlueControlled(self.zone)
+		end
 		if SpawnFriendlyAssets then
 			mist.scheduleFunction(SpawnFriendlyAssets, {}, timer.getTime() + 2)		
 		end
@@ -3874,10 +3869,8 @@ function ZoneCommander:capture(newside)
 			mist.scheduleFunction(SpawnFriendlyAssets, {}, timer.getTime() + 5)		
 		end
 		if addCTLDZonesForBlueControlled then
-			local mappedZoneName = zoneMappings[self.zone]
-			addCTLDZonesForBlueControlled(mappedZoneName)
+			addCTLDZonesForBlueControlled(self.zone)
 		end
-		
         trigger.action.setMarkupColor(2000 + self.index, textcolor)
         trigger.action.setMarkupColorFill(self.index, color)
         trigger.action.setMarkupColor(self.index, color)
@@ -4099,7 +4092,7 @@ end
 					if not self.built[i] then
 						local gr = zone:spawnGroup(v, i == 1)
 						self.built[i] = gr.name
-
+					mist.scheduleFunction(function()
 						upgradeCount = calculateUpgradeCount()
 
 						if self.side == 2 then
@@ -4114,6 +4107,7 @@ end
 
 						self:runTriggers('upgraded')
 						self:clearWreckage()
+					end, {}, timer.getTime() + 0.1)
 						break
 					end
 				end
@@ -4213,7 +4207,7 @@ function GroupCommander:shouldSpawn()
     
 	if tg and tg.active then
 		if self.mission == 'supply' then
-			if tg.side == 0 and not tg.firstCaptureByRed then
+			if tg.side == 0 and (not tg.firstCaptureByRed or self.ForceUrgent) then
 				if isUrgent then
 					return true
 				end
@@ -4417,7 +4411,9 @@ end
 						self.state = 'inhangar'
 						self.lastStateTime = timer.getAbsTime()
 						if tg.side == 0 then
+							mist.scheduleFunction(function()
 							tg:capture(self.side)
+							end, {}, timer.getTime() + 1)
 						elseif tg.side == self.side then
 							tg:upgrade()
 						end
@@ -5786,3 +5782,4 @@ end
 missionMenus = {}
 trackedGroups = trackedGroups or {}
 missionGroupIDs = {}
+
