@@ -1160,6 +1160,10 @@ do
 	GlobalSettings.resetDifficultyScaling()
 end
 
+ejectedPilotOwners = {}
+landedPilotOwners = {}
+
+
 BattleCommander = {}
 do
 	BattleCommander.zones = {}
@@ -1551,28 +1555,6 @@ function BattleCommander:showTargetZoneMenu(coalition, menuname, action, targetz
     
     return menu
 end
-	function checkNeedForCAPMission()
-	if capMissionActive or timer.getTime() < capMissionCooldownUntil then
-        return
-    end
-		local countInAir = 0
-		for _, zC in pairs(bc.zones) do
-			if zC.side == 1 and zC.active then
-				for _, groupCom in ipairs(zC.groups) do
-					if groupCom.side == 1
-					and (groupCom.mission == 'attack' or groupCom.mission == 'patrol')
-					and groupCom.state == 'inair'
-					then
-						countInAir = countInAir + 1
-					end
-				end
-			end
-		end
-		
-		if countInAir >= 2 and not capMissionActive then
-			generateCAPMission()
-		end
-	end
 
 	function BattleCommander:showEmergencyNeutralZoneMenu(coalition, menuname, callback)
 		local menu = missionCommands.addSubMenuForCoalition(coalition, menuname)
@@ -1749,7 +1731,7 @@ end
 					groupId = g:getID(),
 					expend = expCount,
 					weaponType = wepType,
-					groupAttack = true
+					groupAttack = false
 				  } 
 				}
 				
@@ -1786,7 +1768,7 @@ end
 		end
 		
 		local cnt=group:getController()
-		
+		cnt:popTask()
 		local viabletgts = {}
 		for i,v in pairs(zn.built) do
 			local g = Group.getByName(v)
@@ -1804,7 +1786,6 @@ end
 		
 		local choice = viabletgts[math.random(1,#viabletgts)]
 		local p = choice:getPoint()
-		
 		local task = { 
 		  id = 'CarpetBombing', 
 		  params = { 
@@ -1812,14 +1793,13 @@ end
 			carpetLength = 1000,
 			expend = AI.Task.WeaponExpend.ALL,
 			weaponType = Weapon.flag.AnyUnguidedBomb,
-			groupAttack = true,
+			groupAttack = false,
 			attackQty = 1,
 			altitudeEnabled = true,
-			altitude = 9144,
+			altitude = 7000,
 			point = {x=p.x, y=p.z}
 		  } 
 		}
-		cnt:popTask()
 		cnt:pushTask(task)
 	end
 	
@@ -2136,7 +2116,7 @@ end
 					toprint = toprint..'\nstats - display complete leaderboard'
 					toprint = toprint..'\ntop - display top 5 players from leaderboard'
 					toprint = toprint..'\nmystats - display your personal statistics (only in MP)'
-					toprint = toprint..'\njtac-code:1234 - change laser code of JTAC (Valid codes: 1111-1788)'
+					toprint = toprint..'\nmissions display all the active missions'
 					
 					if event.initiator then
 						trigger.action.outTextForGroup(event.initiator:getGroup():getID(), toprint, 20)
@@ -2248,6 +2228,18 @@ end
 						z:killAll()
 						trigger.action.removeMark(event.idx)
 						success = true
+					end
+				end
+                if event.text=='missions' then
+					mc:printMissions(nil)
+                    success = true
+                    trigger.action.removeMark(event.idx)
+                end
+				if event.text=='upgradera' then
+					local z = bc:getZoneOfPoint(event.pos)
+					if z then
+						z:upgrade()
+						trigger.action.removeMark(event.idx)
 					end
 				end
 				if event.text:find('^capture\:') then
@@ -2402,6 +2394,8 @@ function ev:onEvent(event)
             if zn then
                 local isDifferentSide = zn.side ~= un:getCoalition()
                 local gr = event.initiator:getGroup()
+				local groupId = gr:getID()
+				mc:createMissionsMenuForGroup(groupId)
 
                 if isDifferentSide and not zn.wasBlue then
                     for i, v in pairs(net.get_player_list()) do
@@ -2621,11 +2615,11 @@ function BattleCommander:startRewardPlayerContribution(defaultReward, rewards)
 	self.playerRewardsOn = true
 	self.rewards = rewards
 	self.defaultReward = defaultReward
-
 	local ev = {}
 	ev.context = self
 	ev.rewards = rewards
 	ev.default = defaultReward
+
 
 	function ev:onEvent(event)
 		local unit = event.initiator
@@ -2633,37 +2627,54 @@ function BattleCommander:startRewardPlayerContribution(defaultReward, rewards)
 			local side = unit:getCoalition()
 			local groupid = unit:getGroup():getID()
 			local pname = unit:getPlayerName()
+							-- Pilot ejected
+			if event.id == 6 then
+				local initiatorObjectID=unit:getObjectID()
+				if pname then
+					if self.context.playerContributions[side][pname]~=nil and self.context.playerContributions[side][pname]>0 then
+						local tenp=math.floor(self.context.playerContributions[side][pname]*0.25)
+						self.context:addFunds(side,tenp)
+						trigger.action.outTextForCoalition(side,'['..pname..'] ejected. +'..tenp..' credits (25% of earnings). Kill statistics lost.',5)
+						self.context:addStat(pname,'Points',tenp)
+						self.context:addTempStat(pname,'Deaths',1)
+						self.context:addStat(pname,'Deaths',1)
+						local lostCredits=self.context.playerContributions[side][pname]*0.75
+						self.context.playerContributions[side][pname]=0
+						local initiatorObjectID=event.initiator:getObjectID()
+						ejectedPilotOwners[initiatorObjectID]={player=pname,lostCredits=lostCredits,coalition=side}
+						if trackedGroups[groupid] then
+							trackedGroups[groupid]=nil
+							removeMenusForGroupID(groupid)
+							for zName,groupTable in pairs(missionGroupIDs) do
+								if groupTable[groupid] then
+									groupTable[groupid]=nil
+								end
+							end
+						end
+						if capMissionTarget~=nil and capKillsByPlayer[pname]then
+							capKillsByPlayer[pname]=0
+						end
+					end
+				else
+					ejectedPilotOwners[initiatorObjectID]={player=nil,lostCredits=0,coalition=side}
+				end
+			end
 			if pname then
 				-- Pilot death (NEW)
 				if event.id == 9 then -- S_EVENT_PILOT_DEAD
 					self.context:addTempStat(pname, 'Deaths', 1)
 					self.context:addStat(pname, 'Deaths', 1)
 					if trackedGroups[groupid] then
-					trackedGroups[groupid] = nil
-					removeMenusForGroupID(groupid)
-					end
-					if capMissionActive and capKillsByPlayer[pname] then
-					capKillsByPlayer[pname] = 0
-					end
-				end
-				-- Pilot ejected
-				if event.id == 6 then
-
-					if self.context.playerContributions[side][pname] ~= nil and self.context.playerContributions[side][pname] > 0 then
-						local tenp = math.floor(self.context.playerContributions[side][pname] * 0.25)
-						self.context:addFunds(side, tenp)
-						trigger.action.outTextForCoalition(side, '[' .. pname .. '] ejected. +' .. tenp .. ' credits (25% of earnings). Kill statistics lost.', 5)
-						self.context:addStat(pname, 'Points', tenp)
-						self.context:addTempStat(pname, 'Deaths', 1)
-						self.context:addStat(pname, 'Deaths', 1)
-						self.context.playerContributions[side][pname] = 0
-						if trackedGroups[groupid] then
 						trackedGroups[groupid] = nil
 						removeMenusForGroupID(groupid)
+						for zName, groupTable in pairs(missionGroupIDs) do
+							if groupTable[groupid] then
+								groupTable[groupid] = nil
+							end
 						end
-						if capMissionActive and capKillsByPlayer[pname] then
+					end
+					if capMissionTarget ~= nil and capKillsByPlayer[pname] then
 						capKillsByPlayer[pname] = 0
-						end
 					end
 				end
 
@@ -2685,13 +2696,13 @@ function BattleCommander:startRewardPlayerContribution(defaultReward, rewards)
 								self.context:addTempStat(pname,stat,1)
 							end
 
-							if capMissionActive and not capMissionCompleted and (event.target:hasAttribute('Planes') or 
+							if capMissionTarget ~= nil and (event.target:hasAttribute('Planes') or 
 								event.target:hasAttribute('Helicopters')) then
 								capKillsByPlayer[pname] = (capKillsByPlayer[pname] or 0) + 1
 								local killsSoFar = capKillsByPlayer[pname]
 								if killsSoFar >= capTargetPlanes then
 									capWinner = pname
-									capMissionCompleted = true
+									capMissionTarget = nil
 								end
 							end
 						end
@@ -2800,7 +2811,7 @@ function BattleCommander:startRewardPlayerContribution(defaultReward, rewards)
 	mist.scheduleFunction(resetPoints, {self, 2}, timer.getTime() + 1, 60)
 end
 
-	
+
 	function BattleCommander:objectToRewardPoints(object) -- returns points,message
 		if Object.getCategory(object) == Object.Category.UNIT then
 			local targetType = object:getDesc().category
@@ -3752,7 +3763,10 @@ function ZoneCommander:update()
         if addCTLDZonesForBlueControlled then
 		local mappedZoneName = zoneMappings[self.zone]		
             addCTLDZonesForBlueControlled(mappedZoneName)
-        end		
+        end
+		if SpawnFriendlyAssets then
+			mist.scheduleFunction(SpawnFriendlyAssets, {}, timer.getTime() + 2)		
+		end
     end
 
     for i, v in ipairs(self.groups) do
@@ -4566,6 +4580,7 @@ do
 		obj.carriedCargo = {} -- groupid = source
 		obj.ejectedPilots = {}
 		obj.carriedPilots = {} -- groupid = count
+		obj.carriedPilotData = {}
 		
 		setmetatable(obj, self)
 		self.__index = self
@@ -4718,75 +4733,80 @@ end
 	end
 
 	function LogisticCommander:loadPilot(groupname)
-		local gr = Group.getByName(groupname)
-		local groupid = gr:getID()
+		local gr=Group.getByName(groupname)
+		local groupid=gr:getID()
 		if gr then
-			local un = gr:getUnit(1)
-			if Utils.getAGL(un) > 50 then
-				trigger.action.outTextForGroup(groupid, "You are too high", 15)
+			local un=gr:getUnit(1)
+			if Utils.getAGL(un)>50 then
+				trigger.action.outTextForGroup(groupid,"You are too high",15)
 				return
 			end
-			
 			if mist.vec.mag(un:getVelocity())>5 then
-				trigger.action.outTextForGroup(groupid, "You are moving too fast", 15)
+				trigger.action.outTextForGroup(groupid,"You are moving too fast",15)
 				return
 			end
-			
-			if self.carriedPilots[groupid] >= LogisticCommander.maxCarriedPilots then
-				trigger.action.outTextForGroup(groupid, "At max capacity", 15)
+			if self.carriedPilots[groupid]>=LogisticCommander.maxCarriedPilots then
+				trigger.action.outTextForGroup(groupid,"At max capacity",15)
 				return
 			end
-		
-			for i,v in ipairs(self.ejectedPilots) do
-				local dist = mist.utils.get3DDist(un:getPoint(),v:getPoint())
+			for i,v in ipairs(self.ejectedPilots)do
+				local dist=mist.utils.get3DDist(un:getPoint(),v:getPoint())
 				if dist<150 then
-					self.carriedPilots[groupid] = self.carriedPilots[groupid] + 1
-					table.remove(self.ejectedPilots, i)
+					self.carriedPilots[groupid]=self.carriedPilots[groupid]+1
+					self.carriedPilotData=self.carriedPilotData or {}
+					self.carriedPilotData[groupid]=self.carriedPilotData[groupid] or {}
+					local pid=v:getObjectID()
+					local pilotData=landedPilotOwners[pid]
+					if pilotData then
+						table.insert(self.carriedPilotData[groupid],pilotData)
+						landedPilotOwners[pid]=nil
+					end
+					table.remove(self.ejectedPilots,i)
 					v:destroy()
-					trigger.action.outTextForGroup(groupid, "Pilot onboard ["..self.carriedPilots[groupid]..'/'..LogisticCommander.maxCarriedPilots..']', 15)
+					trigger.action.outTextForGroup(groupid,"Pilot onboard ["..self.carriedPilots[groupid].."/"..LogisticCommander.maxCarriedPilots.."]",15)
 					return
 				end
 			end
-			
-			trigger.action.outTextForGroup(groupid, "No ejected pilots nearby", 15)
+			trigger.action.outTextForGroup(groupid,"No ejected pilots nearby",15)
 		end
 	end
-	
 	function LogisticCommander:unloadPilot(groupname)
-		local gr = Group.getByName(groupname)
-		local groupid = gr:getID()
+		local gr=Group.getByName(groupname)
+		local groupid=gr:getID()
 		if gr then
-			local un = gr:getUnit(1)
-			
-			if self.carriedPilots[groupid] == 0 then
-				trigger.action.outTextForGroup(groupid, "No one onboard", 15)
+			local un=gr:getUnit(1)
+			if self.carriedPilots[groupid]==0 then
+				trigger.action.outTextForGroup(groupid,"No one onboard",15)
 				return
 			end
-			
-			if Utils.isInAir(un) then
-				trigger.action.outTextForGroup(groupid, "Can not drop off pilots while in air", 15)
+			if Utils.isInAir(un)then
+				trigger.action.outTextForGroup(groupid,"Can not drop off pilots while in air",15)
 				return
 			end
-			
-			local zn = self.battleCommander:getZoneOfUnit(un:getName())
-			if zn and (zn.active and zn.side == gr:getCoalition() or zn.wasBlue) then
-				local count = self.carriedPilots[groupid]
-				trigger.action.outTextForGroup(groupid, "Pilots dropped off", 15)
-				
+			local zn=self.battleCommander:getZoneOfUnit(un:getName())
+			if zn and (zn.active and zn.side==gr:getCoalition() or zn.wasBlue) then
+				local count=self.carriedPilots[groupid]
+				trigger.action.outTextForGroup(groupid,"Pilots dropped off",15)
 				if self.battleCommander.playerRewardsOn then
-					self.battleCommander:addFunds(un:getCoalition(), self.battleCommander.rewards.rescue*count)
-					trigger.action.outTextForCoalition(un:getCoalition(),count..' pilots were rescued. +'..self.battleCommander.rewards.rescue*count..' credits',5)
+					self.battleCommander:addFunds(un:getCoalition(),self.battleCommander.rewards.rescue*count)
+					trigger.action.outTextForCoalition(un:getCoalition(),count.." pilots were rescued. +"..self.battleCommander.rewards.rescue*count.." credits",5)
+					local rescuedPlayers=self.carriedPilotData[groupid]or{}
+					for _,pilotData in ipairs(rescuedPlayers)do
+						local pname=pilotData.player
+						local restoreAmount=pilotData.lostCredits
+						self.battleCommander:addFunds(un:getCoalition(),restoreAmount)
+						self.battleCommander:addStat(pname,"Points",restoreAmount)
+						trigger.action.outTextForCoalition(un:getCoalition(),"["..pname.."] recovered. +"..restoreAmount.." credits restored.",5)
+					end
+					self.carriedPilotData[groupid]=nil
 				end
-				
-				self.carriedPilots[groupid] = 0
-				
+				self.carriedPilots[groupid]=0
 				return
 			end
-			
-			trigger.action.outTextForGroup(groupid, "Can only drop off pilots in a friendly zone", 15)
+			trigger.action.outTextForGroup(groupid,"Can only drop off pilots in a friendly zone",15)
 		end
 	end
-	
+
 	function LogisticCommander:markPilot(groupname)
 		local gr = Group.getByName(groupname)
 		if gr then
@@ -4857,30 +4877,60 @@ end
 		end
 	end
 	
-	function LogisticCommander:printPilotInfo(pilotObj, groupid, referenceUnit, duration)
-		local pnt = pilotObj:getPoint()
-		local toprint = 'Pilot in need of extraction:'
-		
-		local lat,lon,alt = coord.LOtoLL(pnt)
-		local mgrs = coord.LLtoMGRS(coord.LOtoLL(pnt))
-		toprint = toprint..'\nDDM:  '.. mist.tostringLL(lat,lon,3)
-		toprint = toprint..'\nDMS:  '.. mist.tostringLL(lat,lon,2,true)
-		toprint = toprint..'\nMGRS: '.. mist.tostringMGRS(mgrs, 5)
-		toprint = toprint..'\n\nAlt: '..math.floor(alt)..'m'..' | '..math.floor(alt*3.280839895)..'ft'
-		
-		if referenceUnit then
-			local dist = mist.utils.get3DDist(referenceUnit:getPoint(),pilotObj:getPoint())
-			local dstkm = string.format('%.2f',dist/1000)
-			local dstnm = string.format('%.2f',dist/1852)
-			toprint = toprint..'\n\nDist: '..dstkm..'km'..' | '..dstnm..'nm'
-			
-			local brg =  Utils.getBearing(referenceUnit:getPoint(), pnt)
-			toprint = toprint..'\nBearing: '..math.floor(brg)
+		function LogisticCommander:infoHumanPilot(groupname)
+		local gr = Group.getByName(groupname)
+		if not gr then return end
+		local un = gr:getUnit(1)
+		if not un or not un:isExist() then return end
+		local maxdist = 300000
+		local targetpilot = nil
+		for i,ejectedObj in ipairs(self.ejectedPilots) do
+			local pid = ejectedObj:getObjectID()
+			local pilotData = landedPilotOwners[pid] or ejectedPilotOwners[pid]
+			if pilotData and pilotData.player then
+				local dist = mist.utils.get3DDist(un:getPoint(), ejectedObj:getPoint())
+				if dist < maxdist then
+					maxdist = dist
+					targetpilot = ejectedObj
+				end
+			end
 		end
-		
-		trigger.action.outTextForGroup(groupid, toprint, duration)
+		if targetpilot then
+			self:printPilotInfo(targetpilot, gr:getID(), un, 60)
+		else
+			trigger.action.outTextForGroup(gr:getID(), 'No ejected friendly pilots nearby', 15)
+		end
 	end
 	
+	function LogisticCommander:printPilotInfo(pilotObj,groupid,referenceUnit,duration)
+		local pnt=pilotObj:getPoint()
+		local toprint='Pilot in need of extraction:'
+		local objectID=pilotObj:getObjectID()
+		local pilotData=landedPilotOwners[objectID]
+		if not (pilotData and pilotData.player) then
+			return
+		end
+			toprint = toprint .. '\n\n[' .. pilotData.player .. '] '
+			toprint = toprint .. ' Lost: ' .. pilotData.lostCredits .. ' Credits'
+			toprint = toprint .. '\n\nSave the pilot to retrive the lost credits'
+		
+		local lat,lon,alt=coord.LOtoLL(pnt)
+		local mgrs=coord.LLtoMGRS(coord.LOtoLL(pnt))
+		toprint=toprint..'\n\nDDM:  '..mist.tostringLL(lat,lon,3)
+		toprint=toprint..'\nDMS:  '..mist.tostringLL(lat,lon,2,true)
+		toprint=toprint..'\nMGRS: '..mist.tostringMGRS(mgrs,5)
+		toprint=toprint..'\n\nAlt: '..math.floor(alt)..'m'..' | '..math.floor(alt*3.280839895)..'ft'
+		if referenceUnit then
+			local dist=mist.utils.get3DDist(referenceUnit:getPoint(),pilotObj:getPoint())
+			local dstkm=string.format('%.2f',dist/1000)
+			local dstnm=string.format('%.2f',dist/1852)
+			toprint=toprint..'\n\nDist: '..dstkm..'km'..' | '..dstnm..'nm'
+			local brg=Utils.getBearing(referenceUnit:getPoint(),pnt)
+			toprint=toprint..'\nBearing: '..math.floor(brg)
+		end
+		trigger.action.outTextForGroup(groupid,toprint,duration)
+	end
+
 	function LogisticCommander:update()
 		local tocleanup = {}
 
@@ -4903,6 +4953,7 @@ end
 
 			if pilot and pilot:isExist() then
 				pilot:destroy()
+				landedPilotOwners[pilot:getName()]=nil
 			end
 
 			table.remove(self.ejectedPilots, index)
@@ -4958,6 +5009,7 @@ function LogisticCommander:init()
                     missionCommands.addCommandForGroup(groupid, 'Pick up pilot', csar, self.context.loadPilot, self.context, groupname)
                     missionCommands.addCommandForGroup(groupid, 'Drop off pilot', csar, self.context.unloadPilot, self.context, groupname)
                     missionCommands.addCommandForGroup(groupid, 'Info on closest pilot', csar, self.context.infoPilot, self.context, groupname)
+                    missionCommands.addCommandForGroup(groupid, 'Info on closest pilot with credits', csar, self.context.infoHumanPilot, self.context, groupname)
                     missionCommands.addCommandForGroup(groupid, 'Deploy smoke at closest pilot', csar, self.context.markPilot, self.context, groupname)
                     missionCommands.addCommandForGroup(groupid, 'Deploy flare at closest pilot', csar, self.context.flarePilot, self.context, groupname)
 
@@ -5010,16 +5062,27 @@ function LogisticCommander:init()
             end
         end
 
-        if event.id == world.event.S_EVENT_LANDING_AFTER_EJECTION then
-            local newPilots = {}
-            table.insert(newPilots, event.initiator)
-            for _, pilot in ipairs(newPilots) do
-                table.insert(self.context.ejectedPilots, pilot)
-            end
-            for i, v in pairs(self.context.groupMenus) do
-                self.context:printPilotInfo(event.initiator, i, nil, 15)
-            end
-        end
+		if event.id==world.event.S_EVENT_LANDING_AFTER_EJECTION then
+			local aircraftID=event.place and event.place.id_
+			local pilotObjectID=event.initiator and event.initiator:getObjectID()
+			local pilotData=ejectedPilotOwners[aircraftID]
+
+			if pilotData and pilotData.coalition==coalition.side.RED then
+				event.initiator:destroy()
+				ejectedPilotOwners[aircraftID]=nil
+				return
+			end
+
+			if pilotData then
+				landedPilotOwners[pilotObjectID]=pilotData
+				ejectedPilotOwners[aircraftID]=nil
+			end
+
+			table.insert(self.context.ejectedPilots,event.initiator)
+			for i in pairs(self.context.groupMenus) do
+				self.context:printPilotInfo(event.initiator,i,nil,15)
+			end
+		end
     end
     world.addEventHandler(ev)
     mist.scheduleFunction(self.update, {self}, timer.getTime() + 10, 10)
@@ -5143,21 +5206,20 @@ do
 end
 MissionCommander = {}
 do
-	function MissionCommander:new(obj)
-		obj = obj or {}
-		obj.missions = {}
-		obj.missionsType = {}
-		
-		if obj.checkFrequency then
-			obj.checkFrequency = 30
-		end
-		
-		setmetatable(obj, self)
-		self.__index = self
-		return obj
-	end
+    function MissionCommander:new(obj)
+        obj = obj or {}
+        obj.missions = {}
+        obj.missionsType = {}
+        obj.missionFlags = {}
+        if obj.checkFrequency then
+            obj.checkFrequency = 30
+        end
+        setmetatable(obj, self)
+        self.__index = self
+        return obj
+    end
 
-	function MissionCommander:printMissions()
+	function MissionCommander:printMissions(groupId)
 		local output = 'Active Missions'
 		output = output .. '\n------------------------------------------------'
 
@@ -5171,7 +5233,7 @@ do
 
 		local hasAvailableEscortMissions = false
 		for _, v in ipairs(self.missions) do
-			if v.isEscortMission and not v.isRunning and not v.accept and v:isActive() then
+			if v.isEscortMission and not v.isRunning and not v.accept and v:isActive() and not v.denied then 
 				hasAvailableEscortMissions = true
 				break
 			end
@@ -5188,52 +5250,74 @@ do
 				end
 			end
 		end
-		trigger.action.outTextForCoalition(self.side, output, 20)
+	  if groupId then
+		trigger.action.outTextForGroup(groupId, output, 30)
+	  else
+		trigger.action.outTextForCoalition(2, output, 10)
+	  end
 	end
 	function MissionCommander:trackMission(params)
+
+		if params.isEscortMission and params.zoneName then
+			for _, existing in ipairs(self.missions) do
+				if existing.isEscortMission and existing.zoneName == params.zoneName then
+					return
+				end
+			end
+		end
 		params.isRunning = false
 		params.accept = false
 		params.notified = false
 		table.insert(self.missions, params)
 	end
 
-function MissionCommander:checkMissions(time)
-    for i, v in ipairs(self.missions) do
-        if v.isRunning then
-            if v.missionFail and v:isActive() and v:missionFail() then
-                v.isRunning = false
-				table.remove(self.missions, i)
-			if v.startOver then v:startOver() end
-            elseif not v:isActive() then
-                if v.messageEnd then trigger.action.outTextForCoalition(self.side, self:decodeMessage(v.messageEnd), 30) end
-                if v.reward then self.battleCommander:addFunds(self.side, v.reward) end
-                if v.endAction then v:endAction() end
-                v.isRunning = false
-                return time + 2
-            end
-        elseif v:isActive() and not v.isEscortMission then
-            if v.messageStart then
-                trigger.action.outTextForCoalition(self.side, self:decodeMessage(v.messageStart), 30) end
-            if v.startAction then v:startAction() end
-            v.isRunning = true
-            return time + 2
-        elseif v.isEscortMission and v:isActive() and not v.isRunning then
-            if not v.notified then
-                if v.titleBefore then
-				v:titleBefore() end
-                v.notified = true
-            end
-            if v:isActive() and v.notified and v:returnAccepted() and not v.isRunning then
-                if v.startAction then v.startAction() end
-                v.isRunning = true
-            end
-        elseif v.isEscortMission and not v:isActive() and v.notified then
-            v.notified = false
-        end
-    end
+	function MissionCommander:checkMissions(time)
+		for i, v in ipairs(self.missions) do
+			if v.isRunning then
+				if v.missionFail and v:isActive() and v:missionFail() then
+					v.isRunning = false
+					table.remove(self.missions, i)
+				if v.startOver then v:startOver() end
+				elseif not v:isActive() then
+					if v.messageEnd then trigger.action.outTextForCoalition(self.side, self:decodeMessage(v.messageEnd), 30) end
+					if v.reward then self.battleCommander:addFunds(self.side, v.reward) end
+					if v.endAction then v:endAction() end
+					v.isRunning = false
+					return time + 2
+				end
+			elseif v:isActive() and not v.isEscortMission then
+				if v.canExecute and type(v.canExecute) == 'function' then
+					if v:canExecute() then
+						if v.messageStart then
+							trigger.action.outTextForCoalition(self.side, self:decodeMessage(v.messageStart), 30) end
+						if v.startAction then v:startAction() end
+						v.isRunning = true
+					end
+				else
+					if v.messageStart then
+						trigger.action.outTextForCoalition(self.side, self:decodeMessage(v.messageStart), 30) end
+					if v.startAction then v:startAction() end
+					v.isRunning = true
+					return time + 2
+				end
+			elseif v.isEscortMission and v:isActive() and not v.isRunning then
+				if not v.notified then
+					if v.titleBefore then
+					v:titleBefore() end
+					v.notified = true
+				end
+				if v:isActive() and v.notified and v:returnAccepted() and not v.isRunning then
+					if v.startAction then v.startAction() end
+					v.isRunning = true
+					return time + 4
+				end
+			elseif v.isEscortMission and not v:isActive() and v.notified then
+				v.notified = false
+			end
+		end
 
-    return time + self.checkFrequency
-end
+		return time + self.checkFrequency
+	end
 
 	function MissionCommander:acceptMission(mission)
 		local targetMissionGroup = mission.missionGroup
@@ -5247,10 +5331,15 @@ end
 	end
 
 	function MissionCommander:init()
-		missionCommands.addCommandForCoalition(self.side, 'Missions', nil, self.printMissions, self)
+		--missionCommands.addCommandForCoalition(self.side, 'Missions', nil, self.printMissions, self)
 		timer.scheduleFunction(self.checkMissions, self, timer.getTime() + 15)
 	end
-	
+
+	function MissionCommander:createMissionsMenuForGroup(groupId)
+	env.info("DEBUG: Creating menu for groupId="..tostring(groupId))
+    missionCommands.addCommandForGroup(groupId, "Missions", nil, function() self:printMissions(groupId) end)
+	end
+
 	function MissionCommander:decodeMessage(param)
 		if type(param) == "function" then
 			return param()
@@ -5328,9 +5417,6 @@ function startNextMission(missionZone)
     end
 end
 
-
-
-
 function monitorFlagForMission(mission, group, groupID)
     if mission.MissionType ~= "Escort" then return end
     local zoneName = mission.zoneName or mission.zone
@@ -5342,8 +5428,8 @@ function monitorFlagForMission(mission, group, groupID)
     mission.schedulerRunning = true
 
     mist.flagFunc.units_in_moving_zones{
-        units = { "[g]" .. mission.missionGroup },
-        zone_units = { "[red][vehicle]" },
+		units      = { "[red][vehicle]" },
+		zone_units = { "[g]" .. mission.missionGroup },
         flag = mission.flag,
         radius = mission.radius,
         req_num = 1,
@@ -5521,6 +5607,7 @@ end
 
 
 function handleMission(zoneName, groupName, groupID, group)
+	if not Missions then return end
     if not group or not group:isExist() then return end
     if not missions[zoneName] then return end
     local currentMission = missions[zoneName]
@@ -5529,11 +5616,10 @@ function handleMission(zoneName, groupName, groupID, group)
         if not trackedGroups[groupName] and zoneName == mission.zone then
             trackedGroups[groupName] = true
             missionMenus[groupID] = missionMenus[groupID] or {}
-			
 
             if IsGroupActive(mission.missionGroup) then
                 monitorFlagForMission(mission, group, groupID)
-                generateEscortMission(zoneName, groupName, groupID, group, currentMission)
+				generateEscortMission(zoneName, groupName, groupID, group, currentMission)
 				missionGroupIDs[zoneName] = missionGroupIDs[zoneName] or {}
 				missionGroupIDs[zoneName][groupID] = {
 					groupID = groupID,
@@ -5544,7 +5630,14 @@ function handleMission(zoneName, groupName, groupID, group)
             end
 
             if canStartMission(mission) then
-			
+				--[[
+				for _, v in ipairs(mc.missions) do
+					if v.zoneName == zoneName and v.isEscortMission then
+						if v.denied == true then v.denied = false end
+						break
+					end
+				end
+				--]]
 				generateEscortMission(zoneName, groupName, groupID, group)
 				
                 local acceptMenu = missionCommands.addSubMenuForGroup(group:getID(), mission.missionTitle)
@@ -5574,6 +5667,12 @@ function handleMission(zoneName, groupName, groupID, group)
 
                 missionCommands.addCommandForGroup(group:getID(), "Deny Mission", acceptMenu, function()
                     trigger.action.outTextForGroup(group:getID(), "Mission denied.", 10)
+					for _, v in ipairs(mc.missions) do
+						if v.zoneName == zoneName and v.isEscortMission then
+							v.denied = true
+							break
+						end
+					end
                     if missionMenus[groupID] and missionMenus[groupID].acceptMenu then
                         missionCommands.removeItemForGroup(groupID, missionMenus[groupID].acceptMenu)
                         missionMenus[groupID].acceptMenu = nil
